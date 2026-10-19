@@ -3,6 +3,7 @@ package jmespath
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -532,3 +533,51 @@ func Test_jpTimeBetween(t *testing.T) {
 		})
 	}
 }
+
+// Test_TimeToCronTimezoneOffset verifies that cron fields are derived from the
+// UTC instant represented by an RFC3339 timestamp, rather than its wall-clock
+// fields in the supplied offset. The weekday field is intentionally not asserted
+// here because its wildcard behavior is covered separately.
+func Test_TimeToCronTimezoneOffset(t *testing.T) {
+	testCases := []struct {
+		name           string
+		timestamp      string
+		expectedFields string
+	}{
+		{
+			name:           "converts non-zero offset to UTC",
+			timestamp:      "2026-10-04T09:00:00-07:00",
+			expectedFields: "0 16 4 10",
+		},
+		{
+			name:           "UTC conversion crosses into the next day",
+			timestamp:      "2026-10-04T23:30:00-07:00",
+			expectedFields: "30 6 5 10",
+		},
+		{
+			name:           "UTC conversion crosses into the previous day",
+			timestamp:      "2026-10-05T01:15:00+05:30",
+			expectedFields: "45 19 4 10",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			query, err := jmespathInterface.Query(fmt.Sprintf("time_to_cron('%s')", tc.timestamp))
+			assert.NilError(t, err)
+
+			res, err := query.Search("")
+			assert.NilError(t, err)
+
+			result, ok := res.(string)
+			assert.Assert(t, ok)
+
+			fields := strings.Fields(result)
+			if len(fields) < 4 {
+				t.Fatalf("expected at least 4 cron fields, got %q", result)
+			}
+			assert.Equal(t, strings.Join(fields[:4], " "), tc.expectedFields)
+		})
+	}
+}
+
