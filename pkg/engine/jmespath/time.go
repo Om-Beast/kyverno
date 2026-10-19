@@ -89,6 +89,9 @@ func jpTimeToCron(arguments []interface{}) (interface{}, error) {
 	if t, err := getTimeArg(timeToCron, arguments, 0); err != nil {
 		return nil, err
 	} else {
+		// Cron expressions do not retain RFC3339 offsets. Normalize to UTC so
+		// the generated fields describe the same instant as the input timestamp.
+		t = t.UTC()
 		var cron string = ""
 		cron += strconv.Itoa(t.Minute()) + " "
 		cron += strconv.Itoa(t.Hour()) + " "
