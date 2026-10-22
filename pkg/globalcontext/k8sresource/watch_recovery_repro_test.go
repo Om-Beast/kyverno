@@ -101,7 +101,7 @@ func TestEntry_PostSyncRelistRecovery(t *testing.T) {
 				require.ErrorIs(t, err, context.Canceled)
 				require.Nil(t, entry)
 				require.Less(t, time.Since(started), cacheSyncTimeout)
-				require.Greater(t, events.calls.Load(), int32(0))
+				require.Eventually(t, func() bool { return events.calls.Load() > 0 }, time.Second, 10*time.Millisecond)
 				return
 			}
 			require.NoError(t, err)
