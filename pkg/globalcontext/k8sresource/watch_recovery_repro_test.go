@@ -35,12 +35,14 @@ func (s *recoveryEventSink) Add(events ...event.Info) {
 func TestEntry_PostSyncRelistRecovery(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
+		failInitial bool
 		failRelist  bool
 		projections bool
 	}{
 		{name: "healthy_relist_control", projections: true},
 		{name: "transient_relist_with_projection", failRelist: true, projections: true},
 		{name: "transient_relist_without_projection", failRelist: true},
+		{name: "initial_list_failure_fails_fast", failInitial: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -52,6 +54,9 @@ func TestEntry_PostSyncRelistRecovery(t *testing.T) {
 			var lists, watches atomic.Int32
 			dyn.PrependReactor("list", "configmaps", func(clienttesting.Action) (bool, runtime.Object, error) {
 				n := lists.Add(1)
+				if tc.failInitial && n == 1 {
+					return true, nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, "missing")
+				}
 				if tc.failRelist && n == 2 {
 					return true, nil, apierrors.NewServiceUnavailable("injected one-shot relist outage")
 				}
@@ -90,7 +95,16 @@ func TestEntry_PostSyncRelistRecovery(t *testing.T) {
 				gce.Spec.Projections = nil
 			}
 			events := &recoveryEventSink{}
+			started := time.Now()
 			entry, err := New(ctx, gce, events, dyn, logr.Discard(), gvr, "default", jmespath.New(config.NewDefaultConfiguration(false)))
+			if tc.failInitial {
+				require.Error(t, err)
+				require.ErrorIs(t, err, context.Canceled)
+				require.Nil(t, entry)
+				require.Less(t, time.Since(started), cacheSyncTimeout)
+				require.Greater(t, events.calls.Load(), int32(0))
+				return
+			}
 			require.NoError(t, err)
 			defer entry.Stop()
 			if tc.projections {
@@ -162,6 +176,14 @@ func currentConfigMapValue(t *testing.T, entry interface{ Get(string) (any, erro
 	require.NoError(t, err)
 	require.True(t, found)
 	return value
+}
+
+func TestShouldReportWatchError(t *testing.T) {
+	now := time.Unix(100, 0)
+	require.True(t, shouldReportWatchError(now, time.Time{}))
+	require.False(t, shouldReportWatchError(now.Add(watchErrorEventInterval-time.Nanosecond), now))
+	require.True(t, shouldReportWatchError(now.Add(watchErrorEventInterval), now))
+	require.True(t, shouldReportWatchError(now.Add(-time.Second), now))
 }
 
 func assertRecovery(t *testing.T, recovered func() bool) bool {
