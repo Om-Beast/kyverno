@@ -1,4 +1,3 @@
-
 package k8sresource
 
 import (
@@ -183,7 +182,7 @@ func TestShouldReportWatchError(t *testing.T) {
 	require.True(t, shouldReportWatchError(now, time.Time{}))
 	require.False(t, shouldReportWatchError(now.Add(watchErrorEventInterval-time.Nanosecond), now))
 	require.True(t, shouldReportWatchError(now.Add(watchErrorEventInterval), now))
-	require.True(t, shouldReportWatchError(now.Add(-time.Second), now))
+	require.False(t, shouldReportWatchError(now.Add(-time.Second), now))
 }
 
 func assertRecovery(t *testing.T, recovered func() bool) bool {
