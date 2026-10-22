@@ -29,7 +29,16 @@ import (
 // controller's single reconcile worker indefinitely; the workqueue retries
 // with backoff on error. Callers can enforce a shorter bound through the
 // deadline of the context passed to New.
-const cacheSyncTimeout = 30 * time.Second
+const (
+	cacheSyncTimeout         = 30 * time.Second
+	watchErrorEventInterval = time.Minute
+)
+
+// shouldReportWatchError bounds post-sync warning events to one per interval.
+// Initial sync failures are always reported separately by the watch handler.
+func shouldReportWatchError(now, last time.Time) bool {
+	return last.IsZero() || !now.Before(last.Add(watchErrorEventInterval))
+}
 
 type entry struct {
 	lister      cache.GenericLister
@@ -90,28 +99,36 @@ func New(
 	// races with the completion of initial synchronization.
 	var startupMu sync.Mutex
 	startupComplete := false
+	var lastWatchErrorEvent time.Time
 
 	err := informer.Informer().SetWatchErrorHandler(func(r *cache.Reflector, err error) {
-		eventErr := fmt.Errorf("failed to run informer for %s: %w", gvr, err)
-		eventGen.Add(entryevent.NewErrorEvent(corev1.ObjectReference{
-			APIVersion: gce.APIVersion,
-			Kind:       gce.Kind,
-			Name:       gce.Name,
-			Namespace:  gce.Namespace,
-			UID:        gce.UID,
-		}, eventErr))
-
-		// Fail fast only before initial cache synchronization. After the
-		// informer has synced, client-go must remain alive to retry transient
-		// LIST/WATCH failures; otherwise Get keeps serving a stale cache.
-		// Serialize the decision with completion of New's initial sync so an
-		// error cannot cancel the informer just as the entry is published.
-		// Never call stop() here: it joins the reflector's own goroutine.
+		// Fail fast only before initial cache synchronization. Once synced,
+		// leave retries and relisting to the client-go reflector (#18180).
+		// Serialize the decision with New's startup completion and throttle
+		// recurring diagnostics so an API outage cannot flood Warning Events.
+		// Never call stop() here: it would join the reflector's own goroutine.
 		startupMu.Lock()
-		if !startupComplete && !informer.Informer().HasSynced() {
+		initialFailure := !startupComplete && !informer.Informer().HasSynced()
+		if initialFailure {
 			cancel()
 		}
+		now := time.Now()
+		reportError := initialFailure || shouldReportWatchError(now, lastWatchErrorEvent)
+		if reportError {
+			lastWatchErrorEvent = now
+		}
 		startupMu.Unlock()
+
+		if reportError {
+			eventErr := fmt.Errorf("failed to run informer for %s: %w", gvr, err)
+			eventGen.Add(entryevent.NewErrorEvent(corev1.ObjectReference{
+				APIVersion: gce.APIVersion,
+				Kind:       gce.Kind,
+				Name:       gce.Name,
+				Namespace:  gce.Namespace,
+				UID:        gce.UID,
+			}, eventErr))
+		}
 	})
 	if err != nil {
 		logger.Error(err, "failed to set watch error handler")
