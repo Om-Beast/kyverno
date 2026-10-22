@@ -216,6 +216,13 @@ func New(
 		e.recomputeProjections()
 	}
 
+	// A cancellation may occur while computing initial projections. Never
+	// publish an entry whose backing informer has already stopped.
+	if err := ctx.Err(); err != nil {
+		stop()
+		return nil, fmt.Errorf("failed to initialize cache for %s: informer stopped (%w)", gvr, err)
+	}
+
 	return e, nil
 }
 
