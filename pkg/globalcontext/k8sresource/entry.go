@@ -30,7 +30,7 @@ import (
 // with backoff on error. Callers can enforce a shorter bound through the
 // deadline of the context passed to New.
 const (
-	cacheSyncTimeout         = 30 * time.Second
+	cacheSyncTimeout        = 30 * time.Second
 	watchErrorEventInterval = time.Minute
 )
 
