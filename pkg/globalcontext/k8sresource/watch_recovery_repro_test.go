@@ -33,12 +33,16 @@ func (s *recoveryEventSink) Add(events ...event.Info) {
 // An expired watch forces a relist; exactly one relist fails, then the API
 // fixture is healthy again. The same entry must eventually observe new data.
 func TestEntry_PostSyncRelistRecovery(t *testing.T) {
-	for _, failRelist := range []bool{false, true} {
-		name := "healthy_relist_control"
-		if failRelist {
-			name = "one_transient_relist_failure"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		failRelist  bool
+		projections bool
+	}{
+		{name: "healthy_relist_control", projections: true},
+		{name: "transient_relist_with_projection", failRelist: true, projections: true},
+		{name: "transient_relist_without_projection", failRelist: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			gvr := schema.GroupVersionResource{Version: "v1", Resource: "configmaps"}
@@ -48,7 +52,7 @@ func TestEntry_PostSyncRelistRecovery(t *testing.T) {
 			var lists, watches atomic.Int32
 			dyn.PrependReactor("list", "configmaps", func(clienttesting.Action) (bool, runtime.Object, error) {
 				n := lists.Add(1)
-				if failRelist && n == 2 {
+				if tc.failRelist && n == 2 {
 					return true, nil, apierrors.NewServiceUnavailable("injected one-shot relist outage")
 				}
 				value, rv := "old", "1"
@@ -82,29 +86,37 @@ func TestEntry_PostSyncRelistRecovery(t *testing.T) {
 					Projections:        []kyvernov2beta1.GlobalContextEntryProjection{{Name: "values", JMESPath: "[].data.value"}},
 				},
 			}
+			if !tc.projections {
+				gce.Spec.Projections = nil
+			}
 			events := &recoveryEventSink{}
 			entry, err := New(ctx, gce, events, dyn, logr.Discard(), gvr, "default", jmespath.New(config.NewDefaultConfiguration(false)))
 			require.NoError(t, err)
 			defer entry.Stop()
-			initial, err := entry.Get("values")
-			require.NoError(t, err)
-			require.Equal(t, []interface{}{"old"}, initial)
+			if tc.projections {
+				initial, err := entry.Get("values")
+				require.NoError(t, err)
+				require.Equal(t, []interface{}{"old"}, initial)
+			}
+			require.Equal(t, "old", currentConfigMapValue(t, entry))
 			require.Eventually(t, func() bool { return watches.Load() == 1 }, 5*time.Second, 10*time.Millisecond)
 
 			// New has returned and the entry is usable before the fault occurs.
 			firstWatch.Error(&metav1.Status{Status: metav1.StatusFailure, Reason: metav1.StatusReasonExpired, Code: 410, Message: "injected expired resource version"})
-			if failRelist {
+			if tc.failRelist {
 				require.Eventually(t, func() bool { return events.calls.Load() > 0 }, 10*time.Second, 10*time.Millisecond,
 					"the watch error callback must have observed the relist failure")
 			}
 			recovered := func() bool {
-				projection, err := entry.Get("values")
-				if err != nil {
-					return false
-				}
-				values, ok := projection.([]interface{})
-				if !ok || len(values) != 1 || values[0] != "new" {
-					return false
+				if tc.projections {
+					projection, err := entry.Get("values")
+					if err != nil {
+						return false
+					}
+					values, ok := projection.([]interface{})
+					if !ok || len(values) != 1 || values[0] != "new" {
+						return false
+					}
 				}
 				raw, err := entry.Get("")
 				if err != nil {
@@ -122,8 +134,12 @@ func TestEntry_PostSyncRelistRecovery(t *testing.T) {
 				return value == "new" && watches.Load() >= 2
 			}
 			ok := assertRecovery(t, recovered)
-			projection, getErr := entry.Get("values")
-			t.Logf("recovered=%v list_calls=%d watch_calls=%d error_events=%d projection=%v get_error=%v", ok, lists.Load(), watches.Load(), events.calls.Load(), projection, getErr)
+			if tc.projections {
+				projection, getErr := entry.Get("values")
+				t.Logf("recovered=%v list_calls=%d watch_calls=%d error_events=%d projection=%v get_error=%v", ok, lists.Load(), watches.Load(), events.calls.Load(), projection, getErr)
+			} else {
+				t.Logf("recovered=%v list_calls=%d watch_calls=%d error_events=%d", ok, lists.Load(), watches.Load(), events.calls.Load())
+			}
 			raw, rawErr := entry.Get("")
 			t.Logf("raw=%v raw_error=%v", raw, rawErr)
 			if !ok {
@@ -131,6 +147,21 @@ func TestEntry_PostSyncRelistRecovery(t *testing.T) {
 			}
 		})
 	}
+}
+
+func currentConfigMapValue(t *testing.T, entry interface{ Get(string) (any, error) }) string {
+	t.Helper()
+	raw, err := entry.Get("")
+	require.NoError(t, err)
+	objects, ok := raw.([]interface{})
+	require.True(t, ok)
+	require.Len(t, objects, 1)
+	obj, ok := objects[0].(map[string]interface{})
+	require.True(t, ok)
+	value, found, err := unstructured.NestedString(obj, "data", "value")
+	require.NoError(t, err)
+	require.True(t, found)
+	return value
 }
 
 func assertRecovery(t *testing.T, recovered func() bool) bool {
