@@ -83,8 +83,16 @@ func New(
 	ctx, cancel := context.WithCancel(ctx)
 	stop := newOnceStop(cancel, &group)
 
+	// Coordinate the transition from initial cache synchronization to normal
+	// operation with watch errors. A failing initial LIST must still abort New
+	// promptly, but errors after a successful sync must not kill the informer.
+	// The mutex also prevents returning an already-cancelled entry if an error
+	// races with the completion of initial synchronization.
+	var startupMu sync.Mutex
+	startupComplete := false
+
 	err := informer.Informer().SetWatchErrorHandler(func(r *cache.Reflector, err error) {
-		eventErr := fmt.Errorf("failed to run informer for %s", gvr)
+		eventErr := fmt.Errorf("failed to run informer for %s: %w", gvr, err)
 		eventGen.Add(entryevent.NewErrorEvent(corev1.ObjectReference{
 			APIVersion: gce.APIVersion,
 			Kind:       gce.Kind,
@@ -93,16 +101,17 @@ func New(
 			UID:        gce.UID,
 		}, eventErr))
 
-		// Only cancel the context here, never call stop(). This handler runs
-		// on the reflector's goroutine, which informer.Informer().Run (and
-		// therefore stop's group.Wait) transitively waits on: calling stop()
-		// from here self-deadlocks, wedging the entry forever and permanently
-		// blocking the globalcontext controller's single reconcile worker, so
-		// one entry referencing a non-existent CRD prevents every other
-		// GlobalContextEntry from loading (#15856). Cancelling the context
-		// lets the informer wind down; WaitForCacheSync below observes the
-		// cancellation and the error path performs the full stop().
-		cancel()
+		// Fail fast only before initial cache synchronization. After the
+		// informer has synced, client-go must remain alive to retry transient
+		// LIST/WATCH failures; otherwise Get keeps serving a stale cache.
+		// Serialize the decision with completion of New's initial sync so an
+		// error cannot cancel the informer just as the entry is published.
+		// Never call stop() here: it joins the reflector's own goroutine.
+		startupMu.Lock()
+		if !startupComplete && !informer.Informer().HasSynced() {
+			cancel()
+		}
+		startupMu.Unlock()
 	})
 	if err != nil {
 		logger.Error(err, "failed to set watch error handler")
@@ -171,6 +180,18 @@ func New(
 			UID:        gce.UID,
 		}, err))
 		return nil, err
+	}
+
+	// Publish a successfully synchronized entry only after closing the
+	// watch-error/startup race. If a pre-sync failure cancelled the context
+	// just as WaitForCacheSync reported success, do not retain a dead entry.
+	startupMu.Lock()
+	startupComplete = true
+	startupErr := ctx.Err()
+	startupMu.Unlock()
+	if startupErr != nil {
+		stop()
+		return nil, fmt.Errorf("failed to sync cache for %s: informer stopped (%w)", gvr, startupErr)
 	}
 
 	// Compute initial projections after cache sync
