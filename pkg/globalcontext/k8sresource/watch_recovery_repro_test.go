@@ -2,6 +2,8 @@ package k8sresource
 
 import (
 	"context"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,10 +24,28 @@ import (
 	clienttesting "k8s.io/client-go/testing"
 )
 
-type recoveryEventSink struct{ calls atomic.Int32 }
+type recoveryEventSink struct {
+	calls atomic.Int32
+	mu    sync.Mutex
+	infos []event.Info
+}
 
 func (s *recoveryEventSink) Add(events ...event.Info) {
+	s.mu.Lock()
+	s.infos = append(s.infos, events...)
+	s.mu.Unlock()
 	s.calls.Add(int32(len(events)))
+}
+
+func (s *recoveryEventSink) containsMessage(fragment string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.infos {
+		if strings.Contains(e.Message, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 // Exercise the production New/Get lifecycle with client-go's real informer.
@@ -117,8 +137,10 @@ func TestEntry_PostSyncRelistRecovery(t *testing.T) {
 			// New has returned and the entry is usable before the fault occurs.
 			firstWatch.Error(&metav1.Status{Status: metav1.StatusFailure, Reason: metav1.StatusReasonExpired, Code: 410, Message: "injected expired resource version"})
 			if tc.failRelist {
-				require.Eventually(t, func() bool { return events.calls.Load() > 0 }, 10*time.Second, 10*time.Millisecond,
-					"the watch error callback must have observed the relist failure")
+				require.Eventually(t, func() bool {
+					return events.containsMessage("injected one-shot relist outage")
+				}, 10*time.Second, 10*time.Millisecond,
+					"the watch error callback must report the underlying relist failure")
 			}
 			recovered := func() bool {
 				if tc.projections {
