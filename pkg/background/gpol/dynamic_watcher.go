@@ -418,12 +418,43 @@ func downstreamKey(gvk schema.GroupVersionKind, namespace, name string) string {
 	return gvk.String() + "/" + namespace + "/" + name
 }
 
-// deleteCachedDownstream deletes one generated object and drops its cache entry
-// when the delete succeeds or the object is already gone. Any other error keeps
-// the entry so a later pass can retry.
+// deleteCachedDownstream deletes one generated object by its cached UID.
+// Success, NotFound, or confirmation that the name now belongs to another UID
+// retire the cache entry. Other errors keep it for a later safe retry.
 func (wm *WatchManager) deleteCachedDownstream(logger logr.Logger, watcher *watcher, uid types.UID, res Resource) {
+	// The cache key is the observed UID. Data is also used as a desired-state
+	// copy and may have an empty or older UID after propagation or recreation.
+	if uid == "" || res.Data == nil {
+		logger.Error(errors.New("missing cached UID or resource data"), "refusing to delete downstream without object identity", "name", res.Name, "namespace", res.Namespace)
+		return
+	}
+
 	logger.V(4).Info("deleting downstream resource", "kind", res.Data.GetKind(), "name", res.Name, "namespace", res.Namespace)
-	err := wm.client.DeleteResource(context.TODO(), res.Data.GetAPIVersion(), res.Data.GetKind(), res.Namespace, res.Name, false, metav1.DeleteOptions{})
+	options := metav1.DeleteOptions{
+		Preconditions: &metav1.Preconditions{UID: &uid},
+	}
+	err := wm.client.DeleteResource(context.TODO(), res.Data.GetAPIVersion(), res.Data.GetKind(), res.Namespace, res.Name, false, options)
+	if apierrors.IsConflict(err) {
+		// A same-named object may have replaced the generated downstream.
+		// Confirm this with a live GET before retiring the stale cache entry.
+		live, getErr := wm.client.GetResource(context.TODO(), res.Data.GetAPIVersion(), res.Data.GetKind(), res.Namespace, res.Name)
+		if apierrors.IsNotFound(getErr) {
+			logger.V(4).Info("downstream gone after conflicting delete", "name", res.Name, "namespace", res.Namespace)
+			delete(watcher.metadataCache, uid)
+			return
+		}
+		if getErr == nil && live != nil && live.GetUID() != "" && live.GetUID() != uid {
+			logger.V(4).Info("downstream replaced; retiring stale cache entry", "name", res.Name, "namespace", res.Namespace, "cachedUID", uid, "liveUID", live.GetUID())
+			delete(watcher.metadataCache, uid)
+			return
+		}
+		if getErr != nil {
+			logger.Error(getErr, "failed to verify downstream after conflicting delete", "name", res.Name, "namespace", res.Namespace)
+		} else {
+			logger.Error(err, "downstream delete conflicted without confirmed replacement; keeping cache entry", "name", res.Name, "namespace", res.Namespace)
+		}
+		return
+	}
 	if err != nil && !apierrors.IsNotFound(err) {
 		logger.Error(err, "failed to delete downstream resource", "name", res.Name, "namespace", res.Namespace)
 		return
