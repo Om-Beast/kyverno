@@ -1,3 +1,7 @@
+## Unreleased
+
+- fix(ttl): guard TTL cleanup deletions with UID and resourceVersion preconditions (#18149)
+
 ## v1.13.0
 
 ### Note
