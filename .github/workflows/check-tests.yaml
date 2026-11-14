@@ -244,6 +244,7 @@ jobs:
       - perf
     permissions:
       issues: write
+      actions: read
     runs-on: ubuntu-slim
     steps:
       - name: Checkout
@@ -266,6 +267,23 @@ jobs:
         run: |
           echo "deferred=true" >> "$GITHUB_OUTPUT"
           echo "::notice::This first attempt failed. The Tests re-run workflow re-runs the failed jobs once, and the second attempt updates the tracking issue."
+      # Download all matrix artifacts from this run. A missing artifact (e.g.
+      # failed cluster setup) is not treated as a passing Chainsaw suite.
+      - name: Download Chainsaw reports
+        if: steps.defer.outputs.deferred != 'true' && contains(needs.*.result, 'failure')
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: conformance-report-*
+          path: ${{ runner.temp }}/e2e-reports
+      - name: Summarize Chainsaw failures
+        if: steps.defer.outputs.deferred != 'true' && contains(needs.*.result, 'failure')
+        shell: bash
+        run: |
+          python3 scripts/e2e/report.py summary \
+            --input-dir "${{ runner.temp }}/e2e-reports" \
+            --output "${{ runner.temp }}/e2e-summary.md"
+          cat "${{ runner.temp }}/e2e-summary.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Sync issue
         if: steps.defer.outputs.deferred != 'true'
         uses: ./.github/actions/workflow/failure-issue
@@ -274,6 +292,7 @@ jobs:
           needs: ${{ toJSON(needs) }}
           # Read by the E2E gate (.github/workflows/e2e-gate.yaml).
           labels: e2e-failure
+          report-file: ${{ runner.temp }}/e2e-summary.md
           note: |
             ### Clearing the E2E Gate
 
