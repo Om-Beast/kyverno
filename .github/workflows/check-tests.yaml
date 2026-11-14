@@ -278,6 +278,7 @@ jobs:
           path: ${{ runner.temp }}/e2e-reports
       - name: Summarize Chainsaw failures
         if: steps.defer.outputs.deferred != 'true' && contains(needs.*.result, 'failure')
+        continue-on-error: true
         shell: bash
         run: |
           python3 scripts/e2e/report.py summary \
