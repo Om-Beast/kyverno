@@ -167,6 +167,34 @@ runs:
           --include-test-regex '^chainsaw$/${{ inputs.chainsaw-tests }}' \
           --shard-index ${{ inputs.shard-index }} \
           --shard-count ${{ inputs.shard-count }}
+    # Chainsaw supports one output format per invocation. Convert its native
+    # JSON to JUnit rather than rerunning an expensive E2E suite.
+    - name: Prepare structured E2E reports
+      if: always()
+      shell: bash
+      env:
+        TESTS_PATH: ${{ inputs.tests-path }}
+        K8S_VERSION: ${{ inputs.k8s-version }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$GITHUB_WORKSPACE/conformance-results"
+        python3 scripts/e2e/report.py metadata \
+          --suite "$TESTS_PATH" --k8s "$K8S_VERSION" --run-url "$RUN_URL" \
+          --output "$GITHUB_WORKSPACE/conformance-results/context.json"
+        if [ -f "$GITHUB_WORKSPACE/conformance-results/results.json" ]; then
+          python3 scripts/e2e/report.py junit \
+            "$GITHUB_WORKSPACE/conformance-results/results.json" \
+            "$GITHUB_WORKSPACE/conformance-results/results.xml"
+        fi
+    - name: Upload structured E2E reports
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: conformance-report-${{ github.job }}-${{ inputs.k8s-version }}-${{ strategy.job-index }}-${{ github.run_attempt }}
+        path: conformance-results/
+        retention-days: 14
+        if-no-files-found: warn
     - name: Retain per-test release results
       if: always() && env.RELEASE_CANDIDATE == 'true'
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -178,3 +206,6 @@ runs:
     - name: Debug failure
       if: failure()
       uses: ./.github/actions/kyverno/logs
+      with:
+        suite: ${{ inputs.tests-path }}
+        k8s-version: ${{ inputs.k8s-version }}
