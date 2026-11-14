@@ -55,7 +55,7 @@ runs:
     # Only E2E callers supply suite/version. Other uses of this action keep
     # their existing log output without creating extra public artifacts.
     - name: Collect E2E diagnostics
-      if: inputs.suite != '' && inputs.k8s-version != ''
+      if: always() && inputs.suite != '' && inputs.k8s-version != ''
       shell: bash
       env:
         SUITE: ${{ inputs.suite }}
