@@ -82,7 +82,7 @@ def create_junit(source, destination):
 
 def sanitize_cell(value, limit=220):
     value = " ".join(str(value).split())
-    value = value.replace("|", "\\|").replace("`", "'")
+    value = value.replace("|", r"\|").replace("`", "'")
     return value[:limit] + ("…" if len(value) > limit else "")
 
 
