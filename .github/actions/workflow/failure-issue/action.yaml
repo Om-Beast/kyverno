@@ -19,6 +19,10 @@ inputs:
     description: 'Extra markdown appended to the tracking issue body'
     required: false
     default: ''
+  report-file:
+    description: 'Optional markdown file with structured E2E failure details'
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -27,9 +31,25 @@ runs:
       env:
         EXTRA_LABELS: ${{ inputs.labels }}
         NOTE: ${{ inputs.note }}
+        REPORT_FILE: ${{ inputs.report-file }}
       with:
         script: |
           const { owner, repo } = context.repo;
+          // Failure summaries are produced by the parent job from uploaded
+          // JSON reports. Reading a file avoids injecting multiline content
+          // into a GitHub expression or environment variable.
+          const fs = require('fs');
+          let reportSection = [];
+          if (process.env.REPORT_FILE) {
+            try {
+              const markdown = fs.readFileSync(process.env.REPORT_FILE, 'utf8')
+                .slice(0, 12000).trim();
+              if (markdown) reportSection = ['', markdown, ''];
+            } catch (err) {
+              core.warning('No structured E2E report available: ' + String(err));
+            }
+          }
+
 
           const workflowName = context.workflow;
           const runId = context.runId;
@@ -267,6 +287,7 @@ runs:
               `| **Triggered by** | @${actor} |`,
               `| **Conclusion** | \`${conclusion}\` |`,
               ...formatNeedsResultsTable(needs),
+              ...reportSection,
               ...failedJobsSection,
               ...(process.env.NOTE && process.env.NOTE.trim() ? ['', process.env.NOTE.trim(), ''] : []),
               '---',
