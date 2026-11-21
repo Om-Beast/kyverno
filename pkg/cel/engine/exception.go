@@ -9,6 +9,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// NamespacedPolicyNameIndex is a cache-only field index used by PolicyException
+// handlers to find same-named namespaced policies without listing all policies.
+// A PolicyRef contains a name but no namespace, so lookups must span namespaces.
+const NamespacedPolicyNameIndex = "policyException.policyName"
+
+// IndexPolicyName extracts the name for the namespaced policy cache index.
+func IndexPolicyName(obj client.Object) []string {
+	return []string{obj.GetName()}
+}
+
 type PolicyExceptionLister interface {
 	List(labels.Selector) ([]*policiesv1beta1.PolicyException, error)
 }
