@@ -105,6 +105,12 @@ func NewKubeProvider(
 	// autogen.KindResolver) for irregular plurals like "jobsets" -> "JobSet".
 	celautogen.BareNameResolver = celautogen.RESTMapperBareNameResolver(mgr.GetRESTMapper())
 	celautogen.KindResolver = celautogen.RESTMapperKindResolver(mgr.GetRESTMapper())
+	if polexEnabled {
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &policiesv1beta1.NamespacedValidatingPolicy{}, engine.NamespacedPolicyNameIndex, engine.IndexPolicyName); err != nil {
+			return nil, fmt.Errorf("failed to index namespaced validating policies by name: %w", err)
+		}
+	}
+
 	reconciler := newReconciler(compiler, mgr.GetClient(), polexLister, polexEnabled)
 
 	vpolBuilder := ctrl.NewControllerManagedBy(mgr).For(&policiesv1beta1.ValidatingPolicy{})
@@ -113,7 +119,6 @@ func NewKubeProvider(
 	if polexEnabled {
 		exceptionHandlerFuncs := newPolicyExceptionHandler(mgr.GetClient())
 		vpolBuilder = vpolBuilder.Watches(&policiesv1beta1.PolicyException{}, exceptionHandlerFuncs)
-		nvpolBuilder = nvpolBuilder.Watches(&policiesv1beta1.PolicyException{}, exceptionHandlerFuncs)
 	}
 
 	if err := vpolBuilder.Complete(reconciler); err != nil {
@@ -143,7 +148,7 @@ func newPolicyExceptionHandler(c client.Client) *handler.Funcs {
 				q.Add(reconcile.Request{NamespacedName: client.ObjectKey{Name: ref.Name}})
 			case policieskyvernoio.NamespacedValidatingPolicyKind:
 				var policies policiesv1beta1.NamespacedValidatingPolicyList
-				if err := c.List(ctx, &policies); err != nil {
+				if err := c.List(ctx, &policies, client.MatchingFields{engine.NamespacedPolicyNameIndex: ref.Name}); err != nil {
 					logging.Error(err, "failed to list namespaced validating policies", "policy", ref.Name)
 					continue
 				}

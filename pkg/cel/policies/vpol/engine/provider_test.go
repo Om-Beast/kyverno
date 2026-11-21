@@ -7,6 +7,7 @@ import (
 
 	policieskyvernoio "github.com/kyverno/api/api/policies.kyverno.io"
 	policiesv1beta1 "github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
+	celengine "github.com/kyverno/kyverno/pkg/cel/engine"
 	"github.com/kyverno/kyverno/pkg/cel/policies/vpol/compiler"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,7 +28,7 @@ func TestPolicyExceptionHandler_RequeuesNamespacedPoliciesWithNamespace(t *testi
 		&policiesv1beta1.NamespacedValidatingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "require-team", Namespace: "team-a"}},
 		&policiesv1beta1.NamespacedValidatingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "require-team", Namespace: "team-b"}},
 		&policiesv1beta1.NamespacedValidatingPolicy{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "team-a"}},
-	).Build()
+	).WithIndex(&policiesv1beta1.NamespacedValidatingPolicy{}, celengine.NamespacedPolicyNameIndex, celengine.IndexPolicyName).Build()
 	polex := &policiesv1beta1.PolicyException{
 		ObjectMeta: metav1.ObjectMeta{Name: "exempt", Namespace: "team-a"},
 		Spec: policiesv1beta1.PolicyExceptionSpec{
