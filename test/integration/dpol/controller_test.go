@@ -386,10 +386,12 @@ func TestDeletingPolicy_ExecutesOnNaturalCronTick(t *testing.T) {
 		return apierrors.IsNotFound(err)
 	}, 70*time.Second, 1*time.Second, "target should be deleted after the controller fires on the natural cron tick")
 
-	// Confirm the controller (not us) wrote LastExecutionTime.
-	pol, err := testEnv.KyvernoClient.PoliciesV1beta1().DeletingPolicies().Get(context.Background(), policy.Name, metav1.GetOptions{})
-	require.NoError(t, err)
-	assert.False(t, pol.Status.LastExecutionTime.IsZero(), "controller should have set LastExecutionTime after firing")
+	// The deleting controller updates status after deleting the target.
+	// Wait for the asynchronous status write instead of racing it.
+	require.Eventually(t, func() bool {
+		pol, err := testEnv.KyvernoClient.PoliciesV1beta1().DeletingPolicies().Get(context.Background(), policy.Name, metav1.GetOptions{})
+		return err == nil && !pol.Status.LastExecutionTime.IsZero()
+	}, 15*time.Second, 200*time.Millisecond, "controller should have set LastExecutionTime after firing")
 }
 
 // Tenant safety: a NamespacedDeletingPolicy authored in team-a's namespace must
